@@ -87,5 +87,4 @@ target_include_directories(${DMOD_MODULE_NAME} PRIVATE
 # ======================================================================
 #               test_dm_sw_ring Application
 # ======================================================================
-# Add test_dm_sw_ring application subdirectory
-# add_subdirectory(apps/test_dm_sw_ring)
+add_subdirectory(tests)
