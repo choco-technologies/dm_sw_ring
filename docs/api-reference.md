@@ -66,7 +66,7 @@ dm_sw_ring_t dm_sw_ring_create(dm_sw_ring_capacity_t capacity, dm_sw_ring_flags_
 
 **Parameters:**
 - `capacity` – Buffer size in bytes. Must be greater than 0 and at most `INT32_MAX`.
-- `flags` – Bitmask of `dm_sw_ring_flags_t` values that control synchronization and overflow behaviour.
+- `flags` – Bitmask of `dm_sw_ring_flags_t` values that control synchronization and overflow behavior.
 
 **Returns:** A valid `dm_sw_ring_t` handle on success, or `NULL` on failure (invalid capacity or memory allocation error).
 
@@ -102,7 +102,7 @@ dm_sw_ring_capacity_t dm_sw_ring_write(dm_sw_ring_t ring, const void* data, dm_s
 
 **Returns:** Number of bytes actually written. This may be less than `length` if the buffer is full and neither `drop_old_data` nor `wait_for_space` is set. Returns `0` on error.
 
-**Behaviour summary:**
+**Behavior summary:**
 
 | Flags set | Buffer full → |
 |-----------|---------------|
