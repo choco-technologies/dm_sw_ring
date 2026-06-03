@@ -135,6 +135,7 @@ static void test_write_step(test_context_t* context)
 {
     const uint8_t data[] = {10, 11, 12, 13, 14};
     EXPECT_EQ_U32(dm_sw_ring_write(context->ring, NULL, 1), 0);
+    EXPECT_EQ_U32(dm_sw_ring_size(context->ring), 0);
     EXPECT_EQ_U32(dm_sw_ring_write(context->ring, data, 5), 5);
     EXPECT_EQ_U32(dm_sw_ring_size(context->ring), 4);
 }
@@ -145,6 +146,7 @@ static void test_read_step(test_context_t* context)
     memset(context->io_buffer, 0, sizeof(context->io_buffer));
     EXPECT_EQ_U32(dm_sw_ring_write(context->ring, data, 3), 3);
     EXPECT_EQ_U32(dm_sw_ring_read(context->ring, NULL, 1), 0);
+    EXPECT_EQ_U32(dm_sw_ring_size(context->ring), 3);
     EXPECT_EQ_U32(dm_sw_ring_read(context->ring, context->io_buffer, 2), 2);
     EXPECT_EQ_U8(context->io_buffer[0], 1);
     EXPECT_EQ_U8(context->io_buffer[1], 2);
