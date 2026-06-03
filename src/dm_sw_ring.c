@@ -17,6 +17,7 @@ struct dm_sw_ring
     dm_sw_ring_capacity_t capacity;     // Capacity of the ring buffer (number of elements)
     dm_sw_ring_capacity_t head;         // Index of the head (next element to read)
     dm_sw_ring_capacity_t tail;         // Index of the tail (next element to write)
+    dm_sw_ring_capacity_t count;        // Number of elements currently stored in the ring buffer
     uint8_t* buffer;                    // Pointer to the buffer memory
     dm_sw_ring_flags_t flags;           // Flags for ring buffer behavior
     void* mutex;                        // Mutex for synchronization (if enabled)
@@ -106,6 +107,7 @@ dmod_dm_sw_ring_api_declaration(1.0, dm_sw_ring_t, _create, (dm_sw_ring_capacity
     ring->capacity = capacity;
     ring->head = 0;
     ring->tail = 0;
+    ring->count = 0;
     ring->flags = flags;
     ring->mutex = NULL;
     ring->space_semaphore = NULL;
@@ -153,16 +155,21 @@ dmod_dm_sw_ring_api_declaration(1.0, void, _destroy, (dm_sw_ring_t ring))
     if (lock_ring(ring))
     {
         ring->magic = 0;
+        void* mutex = ring->mutex;
+        ring->mutex = NULL;
 
-        if (ring->mutex != NULL)
+        if (mutex != NULL)
         {
-            Dmod_Mutex_Delete(ring->mutex);
+            Dmod_Mutex_Unlock(mutex);
+            Dmod_Mutex_Delete(mutex);
+        }
+        else
+        {
+            Dmod_ExitCritical();
         }
 
         Dmod_Free(ring->buffer);
         Dmod_Free(ring);
-
-        // No need to unlock since the instance is being destroyed
     }
 }
 
@@ -243,14 +250,7 @@ dmod_dm_sw_ring_api_declaration(1.0, dm_sw_ring_capacity_t, _size, (dm_sw_ring_t
     dm_sw_ring_capacity_t size = 0;
     if(lock_ring(ring))
     {
-        if (ring->tail >= ring->head)
-        {
-            size = ring->tail - ring->head;
-        }
-        else
-        {
-            size = ring->capacity - (ring->head - ring->tail);
-        }
+        size = ring->count;
         unlock_ring(ring);
     }
     return size;
@@ -312,6 +312,7 @@ dmod_dm_sw_ring_api_declaration(1.0, int32_t, _clear, (dm_sw_ring_t ring))
     {
         ring->head = 0;
         ring->tail = 0;
+        ring->count = 0;
         result = 0; // Success
         unlock_ring(ring);
     }
@@ -433,14 +434,7 @@ static bool validate_ring(dm_sw_ring_t ring)
  */
 static dm_sw_ring_capacity_t available_space(dm_sw_ring_t ring)
 {
-    if (ring->tail >= ring->head)
-    {
-        return ring->capacity - (ring->tail - ring->head);
-    }
-    else
-    {
-        return ring->head - ring->tail;
-    }
+    return ring->capacity - ring->count;
 }
 
 /**
@@ -450,14 +444,7 @@ static dm_sw_ring_capacity_t available_space(dm_sw_ring_t ring)
  */
 static dm_sw_ring_capacity_t available_data(dm_sw_ring_t ring)
 {
-    if (ring->tail >= ring->head)
-    {
-        return ring->tail - ring->head;
-    }
-    else
-    {
-        return ring->capacity - (ring->head - ring->tail);
-    }
+    return ring->count;
 }
 
 /**
@@ -467,7 +454,7 @@ static dm_sw_ring_capacity_t available_data(dm_sw_ring_t ring)
  */
 static bool is_full(dm_sw_ring_t ring)
 {
-    return available_space(ring) == 0;
+    return ring->count == ring->capacity;
 }
 
 /**
@@ -477,7 +464,7 @@ static bool is_full(dm_sw_ring_t ring)
  */
 static bool is_empty(dm_sw_ring_t ring)
 {
-    return ring->head == ring->tail;
+    return ring->count == 0;
 }
 
 /**
@@ -489,6 +476,7 @@ static void put_byte(dm_sw_ring_t ring, uint8_t data)
 {
     ring->buffer[ring->tail] = data;
     ring->tail = (ring->tail + 1) % ring->capacity;
+    ring->count++;
 }
 
 /**
@@ -500,6 +488,7 @@ static uint8_t get_byte(dm_sw_ring_t ring)
 {
     uint8_t data = ring->buffer[ring->head];
     ring->head = (ring->head + 1) % ring->capacity;
+    ring->count--;
     return data;
 }
 
@@ -520,6 +509,7 @@ static void discard(dm_sw_ring_t ring, dm_sw_ring_capacity_t length)
     wait_for_data(ring, length); 
 
     ring->head = (ring->head + length) % ring->capacity;
+    ring->count -= length;
 
 }
 
@@ -631,13 +621,10 @@ static dm_sw_ring_capacity_t peek_data(dm_sw_ring_t ring, uint8_t* buffer, dm_sw
 {
     dm_sw_ring_capacity_t peeked = 0;
     dm_sw_ring_capacity_t index = ring->head;
+    dm_sw_ring_capacity_t available = ring->count;
 
-    for (peeked = 0; peeked < length; peeked++)
+    for (peeked = 0; peeked < length && peeked < available; peeked++)
     {
-        if (index == ring->tail)
-        {
-            break; // Buffer is empty
-        }
         buffer[peeked] = ring->buffer[index];
         index = (index + 1) % ring->capacity;
     }
