@@ -1,3 +1,4 @@
+#define DMOD_ENABLE_REGISTRATION ON
 #include "dmod.h"
 #include "dm_sw_ring.h"
 
@@ -59,21 +60,17 @@ void dmod_preinit(void)
     // Nothing to do
 }
 
-/**
- * @brief Module initialization
- */
+
 int dmod_init(const Dmod_Config_t *Config)
 {
-    (void)Config;
+    DMOD_LOG_INFO("DM Software Ring module initialized\n");
     return 0;
 }
 
-/**
- * @brief Module deinitialization
- */
-void dmod_deinit(void)
+int dmod_deinit(void)
 {
-    // Nothing to do
+    DMOD_LOG_INFO("DM Software Ring module deinitialized\n");
+    return 0;
 }
 
 // ============================================================================
