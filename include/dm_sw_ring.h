@@ -1,0 +1,135 @@
+#ifndef DM_SW_RING_H
+#define DM_SW_RING_H
+
+#include <stdint.h>
+#include <stdbool.h>
+#include "dmod_types.h"
+#include "dm_sw_ring_defs.h"
+
+// ============================================================================
+//                      Types
+// ============================================================================
+/**
+ * @brief Opaque handle to a software ring buffer instance
+ */
+typedef struct dm_sw_ring* dm_sw_ring_t;
+
+/**
+ * @brief Type for ring buffer capacity (number of elements)
+ */
+typedef uint32_t dm_sw_ring_capacity_t;
+
+/**
+ * @brief Flags for ring buffer behavior
+ */
+typedef enum
+{
+    dm_sw_ring_flags_drop_old_data  = (1 << 0), //!< Whether to drop old data when the buffer is full
+    dm_sw_ring_flags_mutex_sync     = (1 << 1), //!< Whether to use mutex for synchronization 
+    dm_sw_ring_flags_wait_for_space = (1 << 2), //!< Whether to wait for space to become available when writing to a full buffer
+    dm_sw_ring_flags_wait_for_data  = (1 << 3), //!< Whether to wait for some data to become available when reading from an empty buffer
+    dm_sw_ring_flags_wait_for_some_data = dm_sw_ring_flags_wait_for_data, //!< Whether to wait for at least some data to become available when reading from an empty buffer
+    dm_sw_ring_flags_wait_for_all_data  = dm_sw_ring_flags_wait_for_data | (1 << 4), //!< Whether to wait for all requested data to become available when reading from an empty buffer
+
+    dm_sw_ring_flags_default = dm_sw_ring_flags_drop_old_data 
+                             | dm_sw_ring_flags_mutex_sync 
+                             | dm_sw_ring_flags_wait_for_space 
+                             | dm_sw_ring_flags_wait_for_some_data //!< Default flags for ring buffer behavior
+} dm_sw_ring_flags_t;
+
+// ============================================================================
+//                      Module Interface Declarations
+// ============================================================================
+
+/**
+ * @brief Create a software ring buffer instance
+ * @param capacity The capacity of the ring buffer (number of elements)
+ * @param flags Flags for ring buffer behavior
+ * @return A handle to the created ring buffer instance, or NULL on failure
+ */
+dmod_dm_sw_ring_api(1.0, dm_sw_ring_t, _create, (dm_sw_ring_capacity_t capacity, dm_sw_ring_flags_t flags));
+
+/**
+ * @brief Destroy a software ring buffer instance
+ * @param ring The handle to the ring buffer instance to destroy
+ */
+dmod_dm_sw_ring_api(1.0, void, _destroy, (dm_sw_ring_t ring));
+
+/**
+ * @brief Write data to the ring buffer
+ * @param ring The handle to the ring buffer instance
+ * @param data Pointer to the data to write
+ * @param length The number of elements to write
+ * @return The number of elements actually written, or 0 on failure
+ */
+dmod_dm_sw_ring_api(1.0, dm_sw_ring_capacity_t, _write, (dm_sw_ring_t ring, const void* data, dm_sw_ring_capacity_t length));
+
+/**
+ * @brief Read data from the ring buffer
+ * @param ring The handle to the ring buffer instance
+ * @param buffer Pointer to the buffer to store the read data
+ * @param length The maximum number of elements to read
+ * @return The number of elements actually read, or 0 on failure
+ */
+dmod_dm_sw_ring_api(1.0, dm_sw_ring_capacity_t, _read, (dm_sw_ring_t ring, void* buffer, dm_sw_ring_capacity_t length));
+
+/**
+ * @brief Get the capacity of the ring buffer
+ * @param ring The handle to the ring buffer instance
+ * @return The capacity of the ring buffer (number of elements)
+ */
+dmod_dm_sw_ring_api(1.0, dm_sw_ring_capacity_t, _capacity, (dm_sw_ring_t ring));
+
+/**
+ * @brief Get the number of elements currently stored in the ring buffer
+ * @param ring The handle to the ring buffer instance
+ * @return The number of elements currently stored in the ring buffer
+ */
+dmod_dm_sw_ring_api(1.0, dm_sw_ring_capacity_t, _size, (dm_sw_ring_t ring));
+
+/**
+ * @brief Get the number of free spaces available in the ring buffer
+ * @param ring The handle to the ring buffer instance
+ * @return The number of free spaces available in the ring buffer
+ */
+dmod_dm_sw_ring_api(1.0, dm_sw_ring_capacity_t, _available_space, (dm_sw_ring_t ring));
+
+/**
+ * @brief Peek at the data in the ring buffer without removing it
+ * @param ring The handle to the ring buffer instance
+ * @param buffer Pointer to the buffer to store the peeked data
+ * @param length The maximum number of elements to peek
+ * @return The number of elements actually peeked, or a negative error code on failure
+ */
+dmod_dm_sw_ring_api(1.0, int32_t, _peek, (dm_sw_ring_t ring, void* buffer, dm_sw_ring_capacity_t length));
+
+/**
+ * @brief Discard the oldest data from the ring buffer without reading it
+ * @param ring The handle to the ring buffer instance
+ * @param length The maximum number of elements to discard
+ * @return The number of elements actually discarded, or a negative error code on failure
+ */
+dmod_dm_sw_ring_api(1.0, int32_t, _discard, (dm_sw_ring_t ring, dm_sw_ring_capacity_t length));
+
+/**
+ * @brief Clear the contents of the ring buffer
+ * @param ring The handle to the ring buffer instance
+ * @return 0 on success, or a negative error code on failure
+ */
+dmod_dm_sw_ring_api(1.0, int32_t, _clear, (dm_sw_ring_t ring));
+
+/**
+ * @brief Check if the ring buffer is full
+ * @param ring The handle to the ring buffer instance
+ * @return true if the ring buffer is full, false otherwise
+ */
+dmod_dm_sw_ring_api(1.0, bool, _is_full, (dm_sw_ring_t ring));
+
+/**
+ * @brief Check if the ring buffer is empty
+ * @param ring The handle to the ring buffer instance
+ * @return true if the ring buffer is empty, false otherwise
+ */
+dmod_dm_sw_ring_api(1.0, bool, _is_empty, (dm_sw_ring_t ring));
+
+#endif // DM_SW_RING_H
