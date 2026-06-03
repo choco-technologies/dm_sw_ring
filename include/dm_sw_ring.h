@@ -2,6 +2,7 @@
 #define DM_SW_RING_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "dmod_types.h"
 #include "dm_sw_ring_defs.h"
 
@@ -18,6 +19,22 @@ typedef struct dm_sw_ring* dm_sw_ring_t;
  */
 typedef uint32_t dm_sw_ring_capacity_t;
 
+/**
+ * @brief Flags for ring buffer behavior
+ */
+typedef enum
+{
+    dm_sw_ring_flags_drop_old_data  = (1 << 0), //!< Whether to drop old data when the buffer is full
+    dm_sw_ring_flags_mutex_sync     = (1 << 1), //!< Whether to use mutex for synchronization 
+    dm_sw_ring_flags_wait_for_space = (1 << 2), //!< Whether to block on write when the buffer is full
+    dm_sw_ring_flags_wait_for_data  = (1 << 3), //!< Whether to block on read when the buffer is empty
+
+    dm_sw_ring_flags_default = dm_sw_ring_flags_drop_old_data 
+                             | dm_sw_ring_flags_mutex_sync 
+                             | dm_sw_ring_flags_wait_for_space 
+                             | dm_sw_ring_flags_wait_for_data //!< Default flags for ring buffer behavior
+} dm_sw_ring_flags_t;
+
 // ============================================================================
 //                      Module Interface Declarations
 // ============================================================================
@@ -25,10 +42,10 @@ typedef uint32_t dm_sw_ring_capacity_t;
 /**
  * @brief Create a software ring buffer instance
  * @param capacity The capacity of the ring buffer (number of elements)
- * @param drop_old_data Whether to drop old data when the buffer is full    
+ * @param flags Flags for ring buffer behavior
  * @return A handle to the created ring buffer instance, or NULL on failure
  */
-dmod_dm_sw_ring_api(1.0, dm_sw_ring_t, _create, (dm_sw_ring_capacity_t capacity, bool drop_old_data));
+dmod_dm_sw_ring_api(1.0, dm_sw_ring_t, _create, (dm_sw_ring_capacity_t capacity, dm_sw_ring_flags_t flags));
 
 /**
  * @brief Destroy a software ring buffer instance
@@ -104,13 +121,13 @@ dmod_dm_sw_ring_api(1.0, int32_t, _clear, (dm_sw_ring_t ring));
  * @param ring The handle to the ring buffer instance
  * @return true if the ring buffer is full, false otherwise
  */
-dmod_dm_sw_ring_api(1.0, int32_t, _is_full, (dm_sw_ring_t ring));
+dmod_dm_sw_ring_api(1.0, bool, _is_full, (dm_sw_ring_t ring));
 
 /**
  * @brief Check if the ring buffer is empty
  * @param ring The handle to the ring buffer instance
  * @return true if the ring buffer is empty, false otherwise
  */
-dmod_dm_sw_ring_api(1.0, int32_t, _is_empty, (dm_sw_ring_t ring));
+dmod_dm_sw_ring_api(1.0, bool, _is_empty, (dm_sw_ring_t ring));
 
 #endif // DM_SW_RING_H
