@@ -137,6 +137,7 @@ jobs:
           
           # Add $version-available directives for the modules
           echo "\$version-available dm_sw_ring $VERSIONS" >> versions.dmm
+          echo "\$version-available test_dm_sw_ring $VERSIONS" >> versions.dmm
           
           echo "Generated versions.dmm:"
           cat versions.dmm
