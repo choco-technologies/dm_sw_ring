@@ -19,16 +19,20 @@ struct dm_sw_ring
     uint8_t* buffer;                    // Pointer to the buffer memory
     dm_sw_ring_flags_t flags;           // Flags for ring buffer behavior
     void* mutex;                        // Mutex for synchronization (if enabled)
+    void* data_semaphore;               // Semaphore for waiting on data availability (if enabled)
+    void* space_semaphore;              // Semaphore for waiting on space availability (if enabled)
 };
 
 // ============================================================================
 //                      Local prototypes
 // ============================================================================
 
+static void ring_cleanup(dm_sw_ring_t ring);
 static bool lock_ring(dm_sw_ring_t ring);
 static void unlock_ring(dm_sw_ring_t ring);
 static bool validate_ring(dm_sw_ring_t ring);
 static dm_sw_ring_capacity_t available_space(dm_sw_ring_t ring);
+static dm_sw_ring_capacity_t available_data(dm_sw_ring_t ring);
 static bool is_full(dm_sw_ring_t ring);
 static bool is_empty(dm_sw_ring_t ring);
 static void put_byte(dm_sw_ring_t ring, uint8_t data);
@@ -38,6 +42,10 @@ static dm_sw_ring_capacity_t prepare_space(dm_sw_ring_t ring, dm_sw_ring_capacit
 static dm_sw_ring_capacity_t write_data(dm_sw_ring_t ring, const uint8_t* data, dm_sw_ring_capacity_t length);
 static dm_sw_ring_capacity_t read_data(dm_sw_ring_t ring, uint8_t* buffer, dm_sw_ring_capacity_t length);
 static dm_sw_ring_capacity_t peek_data(dm_sw_ring_t ring, uint8_t* buffer, dm_sw_ring_capacity_t length);
+static bool wait_for_space(dm_sw_ring_t ring, dm_sw_ring_capacity_t length);
+static bool wait_for_data(dm_sw_ring_t ring, dm_sw_ring_capacity_t length);
+static void signal_space(dm_sw_ring_t ring, dm_sw_ring_capacity_t length);
+static void signal_data(dm_sw_ring_t ring, dm_sw_ring_capacity_t length);
 
 // ============================================================================
 //                      Module Interface Implementation
@@ -93,24 +101,8 @@ dmod_dm_sw_ring_api_declaration(1.0, dm_sw_ring_t, _create, (dm_sw_ring_capacity
     if (ring->buffer == NULL)
     {
         DMOD_LOG_ERROR("Failed to allocate memory for ring buffer data\n");
-        Dmod_Free(ring);
+        ring_cleanup(ring);
         return NULL;
-    }
-
-    if(flags & dm_sw_ring_flags_mutex_sync)
-    {
-        ring->mutex = Dmod_Mutex_New(true);
-        if (ring->mutex == NULL)
-        {
-            DMOD_LOG_ERROR("Failed to create mutex for ring buffer synchronization\n");
-            Dmod_Free(ring->buffer);
-            Dmod_Free(ring);
-            return NULL;
-        }
-    }
-    else
-    {
-        ring->mutex = NULL;
     }
 
     ring->magic = DM_SW_RING_MAGIC;
@@ -118,6 +110,43 @@ dmod_dm_sw_ring_api_declaration(1.0, dm_sw_ring_t, _create, (dm_sw_ring_capacity
     ring->head = 0;
     ring->tail = 0;
     ring->flags = flags;
+    ring->mutex = NULL;
+    ring->space_semaphore = NULL;
+    ring->data_semaphore = NULL;
+
+    if(flags & dm_sw_ring_flags_mutex_sync)
+    {
+        ring->mutex = Dmod_Mutex_New(true);
+        if (ring->mutex == NULL)
+        {
+            DMOD_LOG_ERROR("Failed to create mutex for ring buffer synchronization\n");
+            ring_cleanup(ring);
+            return NULL;
+        }
+    }
+
+    if(flags & dm_sw_ring_flags_wait_for_data)
+    {
+        dm_sw_ring_capacity_t max_count = flags & dm_sw_ring_flags_wait_for_all_data ? capacity : 1;
+        ring->data_semaphore = Dmod_Semaphore_New(0, max_count);
+        if (ring->data_semaphore == NULL)
+        {
+            DMOD_LOG_ERROR("Failed to create semaphore for data availability\n");
+            ring_cleanup(ring);
+            return NULL;
+        }
+    }
+
+    if(flags & dm_sw_ring_flags_wait_for_space)
+    {
+        ring->space_semaphore = Dmod_Semaphore_New(ring->capacity, ring->capacity);
+        if (ring->space_semaphore == NULL)
+        {
+            DMOD_LOG_ERROR("Failed to create semaphore for space availability\n");
+            ring_cleanup(ring);
+            return NULL;
+        }
+    }
 
     return ring;
 }
@@ -140,22 +169,31 @@ dmod_dm_sw_ring_api_declaration(1.0, void, _destroy, (dm_sw_ring_t ring))
     }
 }
 
-dmod_dm_sw_ring_api_declaration(1.0, int32_t, _write, (dm_sw_ring_t ring, const void* data, dm_sw_ring_capacity_t length))
+dmod_dm_sw_ring_api_declaration(1.0, dm_sw_ring_capacity_t, _write, (dm_sw_ring_t ring, const void* data, dm_sw_ring_capacity_t length))
 {
-    int32_t written = -1;
+    dm_sw_ring_capacity_t written = 0;
     const uint8_t* input = (const uint8_t*)data;
 
     if ((input == NULL) && (length > 0))
     {
-        DMOD_LOG_ERROR("Invalid data buffer\n");
-        return -1;
+        DMOD_LOG_ERROR("The given data buffer is NULL or length is zero\n");
+        return 0;
     }
 
     if (lock_ring(ring))
     {
-        length = prepare_space(ring, length);
+        while(written < length)
+        {
+            dm_sw_ring_capacity_t to_send = length - written;
+            dm_sw_ring_capacity_t available = prepare_space(ring, to_send);
 
-        written = (int32_t)write_data(ring, input, length);
+            if (available == 0)
+            {
+                break; // No more space available, exit the loop
+            }
+
+            written += write_data(ring, input + written, available);
+        }
 
         unlock_ring(ring);
     }
@@ -163,24 +201,33 @@ dmod_dm_sw_ring_api_declaration(1.0, int32_t, _write, (dm_sw_ring_t ring, const 
     return written;
 }
 
-dmod_dm_sw_ring_api_declaration(1.0, int32_t, _read, (dm_sw_ring_t ring, void* buffer, dm_sw_ring_capacity_t length))
+dmod_dm_sw_ring_api_declaration(1.0, dm_sw_ring_capacity_t, _read, (dm_sw_ring_t ring, void* buffer, dm_sw_ring_capacity_t length))
 {
-    int32_t read = -1;
+    dm_sw_ring_capacity_t all_read = 0;
 
     if ((buffer == NULL) && (length > 0))
     {
         DMOD_LOG_ERROR("Invalid output buffer\n");
-        return -1;
+        return 0;
     }
 
     if (lock_ring(ring))
     {
-        read = (int32_t)read_data(ring, (uint8_t*)buffer, length);
+        while(all_read < length)
+        {
+            dm_sw_ring_capacity_t to_read = length - all_read;
+            dm_sw_ring_capacity_t read = read_data(ring, (uint8_t*)buffer + all_read, to_read);
+            all_read += read;
 
+            if (read == 0 && !(ring->flags & dm_sw_ring_flags_wait_for_all_data))
+            {
+                break; // No more data available, exit the loop
+            }
+        }
         unlock_ring(ring);
     }
 
-    return read;
+    return all_read;
 }
 
 dmod_dm_sw_ring_api_declaration(1.0, dm_sw_ring_capacity_t, _capacity, (dm_sw_ring_t ring))
@@ -301,6 +348,34 @@ dmod_dm_sw_ring_api_declaration(1.0, bool, _is_empty, (dm_sw_ring_t ring))
 // ============================================================================
 
 /**
+ * @brief Clean up resources associated with a ring buffer instance
+ * @param ring The handle to the ring buffer instance to clean up
+ */
+static void ring_cleanup(dm_sw_ring_t ring)
+{
+    if (ring->mutex != NULL)
+    {
+        Dmod_Mutex_Delete(ring->mutex);
+        ring->mutex = NULL;
+    }
+    if (ring->data_semaphore != NULL)
+    {
+        Dmod_Semaphore_Delete(ring->data_semaphore);
+        ring->data_semaphore = NULL;
+    }
+    if (ring->space_semaphore != NULL)
+    {
+        Dmod_Semaphore_Delete(ring->space_semaphore);
+        ring->space_semaphore = NULL;
+    }
+    if (ring->buffer != NULL)
+    {
+        Dmod_Free(ring->buffer);
+        ring->buffer = NULL;
+    }
+}
+
+/**
  * @brief Lock the ring buffer for exclusive access (if mutex synchronization is enabled)
  * @param ring The handle to the ring buffer instance
  * @return true if the lock was acquired successfully, false otherwise
@@ -376,6 +451,23 @@ static dm_sw_ring_capacity_t available_space(dm_sw_ring_t ring)
  * @param ring The handle to the ring buffer instance
  * @return The number of elements currently stored in the ring buffer
  */
+static dm_sw_ring_capacity_t available_data(dm_sw_ring_t ring)
+{
+    if (ring->tail >= ring->head)
+    {
+        return ring->tail - ring->head;
+    }
+    else
+    {
+        return ring->capacity - (ring->head - ring->tail);
+    }
+}
+
+/**
+ * @brief Get the number of elements currently stored in the ring buffer
+ * @param ring The handle to the ring buffer instance
+ * @return The number of elements currently stored in the ring buffer
+ */
 static bool is_full(dm_sw_ring_t ring)
 {
     return available_space(ring) == 0;
@@ -421,7 +513,17 @@ static uint8_t get_byte(dm_sw_ring_t ring)
  */
 static void discard(dm_sw_ring_t ring, dm_sw_ring_capacity_t length)
 {
+    if (length == 0)
+    {
+        return;
+    }
+    dm_sw_ring_capacity_t available = available_data(ring);
+    length = length > available ? available : length; 
+    
+    wait_for_data(ring, length); 
+
     ring->head = (ring->head + length) % ring->capacity;
+
 }
 
 /**
@@ -435,12 +537,28 @@ static dm_sw_ring_capacity_t prepare_space(dm_sw_ring_t ring, dm_sw_ring_capacit
     length = length > ring->capacity ? ring->capacity : length;
     
     dm_sw_ring_capacity_t available = available_space(ring);
-    dm_sw_ring_capacity_t missing   = length - available;
+    dm_sw_ring_capacity_t missing   = (length > available) ? (length - available) : 0;
 
-    if(ring->flags & dm_sw_ring_flags_drop_old_data)
+    if(missing == 0)
+    {
+        available = length; // Enough space available, can write full length
+    }
+    else if(ring->flags & dm_sw_ring_flags_drop_old_data)
     {
         discard(ring, missing);
         available += missing;
+    }
+    else if(ring->flags & dm_sw_ring_flags_wait_for_space)
+    {
+        if(!wait_for_space(ring, missing))
+        {
+            DMOD_LOG_ERROR("Failed to wait for space in ring buffer\n");
+            available = 0; // No space available
+        }
+        else
+        {
+            available = available_space(ring);
+        }
     }
 
     return available;
@@ -459,12 +577,14 @@ static dm_sw_ring_capacity_t write_data(dm_sw_ring_t ring, const uint8_t* data, 
 
     for (written = 0; written < length; written++)
     {
-        if (is_full(ring))
+        if (!wait_for_space(ring, 1))
         {
             break;
         }
         put_byte(ring, data[written]);
     }
+
+    signal_data(ring, written);
 
     return written;
 }
@@ -480,15 +600,25 @@ static dm_sw_ring_capacity_t write_data(dm_sw_ring_t ring, const uint8_t* data, 
 static dm_sw_ring_capacity_t read_data(dm_sw_ring_t ring, uint8_t* buffer, dm_sw_ring_capacity_t length)
 {    
     dm_sw_ring_capacity_t read = 0;
+    bool should_wait = (ring->flags & dm_sw_ring_flags_wait_for_data) != 0;
 
     for (read = 0; read < length; read++)
     {
-        if (is_empty(ring))
+        dm_sw_ring_capacity_t available = available_data(ring);
+        if (available == 0 && !should_wait)
+        {
+            break; // No more data available, exit the loop
+        }
+
+        if (!wait_for_data(ring, 1))
         {
             break; // Buffer is empty
         }
         buffer[read] = get_byte(ring);
+        should_wait = (ring->flags & dm_sw_ring_flags_wait_for_all_data) != 0; // If waiting for all data, continue waiting even if some data was read
     }
+
+    signal_space(ring, read); 
 
     return read;
 }
@@ -516,4 +646,68 @@ static dm_sw_ring_capacity_t peek_data(dm_sw_ring_t ring, uint8_t* buffer, dm_sw
     }
 
     return peeked;
+}
+
+/**
+ * @brief Wait for space to become available in the ring buffer for writing (if wait_for_space flag is enabled)
+ * @param ring The handle to the ring buffer instance
+ * @param length The number of elements to wait for space for
+ * @return true if space is available or was successfully waited for, false if an error occurred while waiting
+ */
+static bool wait_for_space(dm_sw_ring_t ring, dm_sw_ring_capacity_t length)
+{
+    bool success = available_space(ring) >= length;
+    if (ring->space_semaphore != NULL && !success)
+    {
+        unlock_ring(ring); // Unlock before waiting to allow other threads to make progress
+        success = Dmod_Semaphore_Wait(ring->space_semaphore, length) == 0 
+               && lock_ring(ring);
+    }
+
+    return success;
+}
+
+/**
+ * @brief Wait for data to become available in the ring buffer for reading (if wait_for_data or wait_for_some_data flag is enabled)
+ * @param ring The handle to the ring buffer instance
+ * @param length The number of elements to wait for data for
+ * @return true if data is available or was successfully waited for, false if an error occurred while waiting
+ */
+static bool wait_for_data(dm_sw_ring_t ring, dm_sw_ring_capacity_t length)
+{
+    bool success = available_data(ring) >= length;
+    if (ring->data_semaphore != NULL && !success)
+    {
+        unlock_ring(ring); // Unlock before waiting to allow other threads to make progress
+        success = Dmod_Semaphore_Wait(ring->data_semaphore, length) == 0 
+               && lock_ring(ring);
+    }
+
+    return success;
+}
+
+/**
+ * @brief Signal that space has become available in the ring buffer (if wait_for_space flag is enabled)
+ * @param ring The handle to the ring buffer instance
+ * @param length The number of elements of space that have become available
+ */
+static void signal_space(dm_sw_ring_t ring, dm_sw_ring_capacity_t length)
+{
+    if (ring->space_semaphore != NULL)
+    {
+        Dmod_Semaphore_Post(ring->space_semaphore, length);
+    }
+}
+
+/**
+ * @brief Signal that data has become available in the ring buffer (if wait_for_data or wait_for_some_data flag is enabled)
+ * @param ring The handle to the ring buffer instance
+ * @param length The number of elements of data that have become available
+ */
+static void signal_data(dm_sw_ring_t ring, dm_sw_ring_capacity_t length)
+{
+    if (ring->data_semaphore != NULL)
+    {
+        Dmod_Semaphore_Post(ring->data_semaphore, length);
+    }
 }
