@@ -64,7 +64,7 @@ void dmod_preinit(void)
 
 int dmod_init(const Dmod_Config_t *Config)
 {
-    DMOD_LOG_INFO("DM Software Ring module initialized\n");
+    DMOD_LOG_INFO("DM Software Ring module initialized [build: %s %s]\n", __DATE__, __TIME__);
     return 0;
 }
 
@@ -388,16 +388,29 @@ static bool lock_ring(dm_sw_ring_t ring)
         mutex = ring->mutex;
         success = true;
     }
-    else 
+    else
     {
         DMOD_LOG_ERROR("Invalid ring buffer instance\n");
     }
-    Dmod_ExitCritical();
-    if(mutex != NULL && Dmod_Mutex_Lock(ring->mutex) != 0)
+
+    if(success && mutex == NULL)
     {
-        DMOD_LOG_ERROR("Failed to acquire mutex lock for ring buffer\n");
-        success = false;
+        // just for clarity - skip exit of critical section
     }
+    else if(mutex != NULL)
+    {
+        Dmod_ExitCritical();
+        if(Dmod_Mutex_Lock(mutex) != 0)
+        {
+            DMOD_LOG_ERROR("Failed to acquire mutex lock for ring buffer\n");
+            success = false;
+        }
+    }
+    else 
+    {
+        Dmod_ExitCritical();
+    }
+
     return success;
 }
 
