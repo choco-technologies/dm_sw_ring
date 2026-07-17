@@ -673,11 +673,12 @@ static bool wait_for_space(dm_sw_ring_t ring, dm_sw_ring_capacity_t length)
 static bool wait_for_data(dm_sw_ring_t ring, dm_sw_ring_capacity_t length)
 {
     bool success = available_data(ring) >= length;
-    if (ring->data_semaphore != NULL && !success)
+    while (ring->data_semaphore != NULL && !success)
     {
         unlock_ring(ring); // Unlock before waiting to allow other threads to make progress
         success = Dmod_Semaphore_Wait(ring->data_semaphore, length) == 0 
                && lock_ring(ring);
+        success = success && available_data(ring) >= length;
     }
 
     return success;
