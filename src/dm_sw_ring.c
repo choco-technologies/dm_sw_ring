@@ -33,6 +33,7 @@ static void ring_cleanup(dm_sw_ring_t ring);
 static bool lock_ring(dm_sw_ring_t ring);
 static void unlock_ring(dm_sw_ring_t ring);
 static bool validate_ring(dm_sw_ring_t ring);
+static bool waits_for_all_data(dm_sw_ring_flags_t flags);
 static dm_sw_ring_capacity_t available_space(dm_sw_ring_t ring);
 static dm_sw_ring_capacity_t available_data(dm_sw_ring_t ring);
 static bool is_full(dm_sw_ring_t ring);
@@ -126,7 +127,7 @@ dmod_dm_sw_ring_api_declaration(1.0, dm_sw_ring_t, _create, (dm_sw_ring_capacity
 
     if(flags & dm_sw_ring_flags_wait_for_data)
     {
-        dm_sw_ring_capacity_t max_count = flags & dm_sw_ring_flags_wait_for_all_data ? capacity : 1;
+        dm_sw_ring_capacity_t max_count = waits_for_all_data(flags) ? capacity : 1;
         ring->data_semaphore = Dmod_Semaphore_New(0, max_count);
         if (ring->data_semaphore == NULL)
         {
@@ -223,9 +224,9 @@ dmod_dm_sw_ring_api_declaration(1.0, dm_sw_ring_capacity_t, _read, (dm_sw_ring_t
             dm_sw_ring_capacity_t read = read_data(ring, (uint8_t*)buffer + all_read, to_read);
             all_read += read;
 
-            if (read == 0 && !(ring->flags & dm_sw_ring_flags_wait_for_all_data))
+            if (read == 0 || !waits_for_all_data(ring->flags))
             {
-                break; // No more data available, exit the loop
+                break; // No more data available, or some data read and no more waited for
             }
         }
         unlock_ring(ring);
@@ -431,6 +432,20 @@ static void unlock_ring(dm_sw_ring_t ring)
 }
 
 /**
+ * @brief Whether reads wait for all the requested data
+ *
+ * dm_sw_ring_flags_wait_for_all_data includes dm_sw_ring_flags_wait_for_data,
+ * so a ring that waits for some data has one of its bits too: both must be set.
+ *
+ * @param flags The ring buffer's flags
+ * @return true for dm_sw_ring_flags_wait_for_all_data, false otherwise
+ */
+static bool waits_for_all_data(dm_sw_ring_flags_t flags)
+{
+    return (flags & dm_sw_ring_flags_wait_for_all_data) == dm_sw_ring_flags_wait_for_all_data;
+}
+
+/**
  * @brief Validate a ring buffer instance
  * @param ring The handle to the ring buffer instance to validate
  * @return true if the ring buffer instance is valid, false otherwise
@@ -615,7 +630,7 @@ static dm_sw_ring_capacity_t read_data(dm_sw_ring_t ring, uint8_t* buffer, dm_sw
             break; // Buffer is empty
         }
         buffer[read] = get_byte(ring);
-        should_wait = (ring->flags & dm_sw_ring_flags_wait_for_all_data) != 0; // If waiting for all data, continue waiting even if some data was read
+        should_wait = waits_for_all_data(ring->flags); // If waiting for all data, continue waiting even if some data was read
     }
 
     signal_space(ring, read); 
