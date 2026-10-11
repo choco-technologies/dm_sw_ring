@@ -158,3 +158,17 @@ DMOD_TEST_STEP(dm_sw_ring_is_empty)
     DMOD_TEST_EXPECT_TRUE(dm_sw_ring_is_empty(g_ring));
 }
 
+
+DMOD_TEST_STEP(dm_sw_ring_read_some_data)
+{
+    /* Waiting for some data: what is there is returned at once, the rest not waited for */
+    const uint8_t data[] = {1, 2, 3};
+    dm_sw_ring_t ring = dm_sw_ring_create(8, dm_sw_ring_flags_drop_old_data | dm_sw_ring_flags_wait_for_some_data);
+
+    DMOD_TEST_EXPECT_NOT_NULL(ring);
+    DMOD_TEST_EXPECT_EQ(dm_sw_ring_write(ring, data, 3), 3u);
+    DMOD_TEST_EXPECT_EQ(dm_sw_ring_read(ring, g_io_buf, 8), 3u);
+    DMOD_TEST_EXPECT_EQ(g_io_buf[2], 3u);
+    DMOD_TEST_EXPECT_TRUE(dm_sw_ring_is_empty(ring));
+    dm_sw_ring_destroy(ring);
+}
